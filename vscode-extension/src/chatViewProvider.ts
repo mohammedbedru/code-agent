@@ -54,7 +54,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const cfg = vscode.workspace.getConfiguration('codeAgent');
         return {
             backendUrl: cfg.get<string>('backendUrl', 'http://127.0.0.1:8765'),
-            model: cfg.get<string>('model', 'llama3.2:3b'),
+            model: cfg.get<string>('model', 'gemma4:12b'),
             confirmFileEdits: cfg.get<boolean>('confirmFileEdits', false),
             confirmFileDeletion: cfg.get<boolean>('confirmFileDeletion', true),
             confirmDangerousCommands: cfg.get<boolean>('confirmDangerousCommands', true),

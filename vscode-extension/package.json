@@ -50,7 +50,7 @@
         },
         "codeAgent.model": {
           "type": "string",
-          "default": "llama3.2:3b",
+          "default": "gemma4:12b",
           "description": "Ollama model to use"
         },
         "codeAgent.confirmFileEdits": {
