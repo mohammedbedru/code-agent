@@ -1,0 +1,84 @@
+{
+  "name": "code-agent",
+  "displayName": "Mame Code Agent",
+  "description": "Local AI coding agent powered by Ollama",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "code-agent",
+          "title": "Code Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "code-agent": [
+        {
+          "type": "webview",
+          "id": "codeAgent.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codeAgent.openChat",
+        "title": "Code Agent: Open Chat"
+      },
+      {
+        "command": "codeAgent.clearChat",
+        "title": "Code Agent: Clear Chat"
+      }
+    ],
+    "configuration": {
+      "title": "Code Agent",
+      "properties": {
+        "codeAgent.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "URL of the local agent backend"
+        },
+        "codeAgent.model": {
+          "type": "string",
+          "default": "llama3.2:3b",
+          "description": "Ollama model to use"
+        },
+        "codeAgent.confirmFileEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask for confirmation before editing files"
+        },
+        "codeAgent.confirmFileDeletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before deleting files"
+        },
+        "codeAgent.confirmDangerousCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before running flagged commands"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

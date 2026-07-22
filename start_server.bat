@@ -1,0 +1,5 @@
+@echo off
+echo Starting Code Agent Backend...
+cd /d "%~dp0"
+python run_server.py
+pause
