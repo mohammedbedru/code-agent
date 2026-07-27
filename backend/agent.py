@@ -1,8 +1,11 @@
 import json
+import logging
 from typing import Iterator
 from . import ollama_client
 from .prompts import SYSTEM_PROMPT
 from .tools import filesystem, search, terminal
+
+logger = logging.getLogger(__name__)
 
 TOOL_DEFINITIONS = [
     {
@@ -162,13 +165,18 @@ def run_agent(workspace: str, user_message: str, history: list, model: str, sett
       {"type": "done", "content": str}
       {"type": "error", "message": str}
     """
+    logger.info(f"[Agent] Starting run | model={model!r} | workspace={workspace!r}")
+    # Emit model info so the frontend can display it in the log
+    yield {"type": "model_info", "model": model}
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    max_iterations = 20
+    max_iterations = 30
 
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
+        logger.debug(f"[Agent] Iteration {iteration + 1}/{max_iterations} | model={model!r}")
         try:
             response = ollama_client.chat(model=model, messages=messages, tools=TOOL_DEFINITIONS)
         except Exception as e:

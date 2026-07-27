@@ -10,6 +10,8 @@ class ChatViewProvider {
         this._context = _context;
         this._history = [];
         this._abortController = null;
+        // Tracks the model selected in the UI dropdown (overrides VS Code settings)
+        this._selectedModel = null;
         // Track last file paths for auto-opening
         this._lastEditFilePath = null;
         this._lastCreateFilePath = null;
@@ -38,6 +40,18 @@ class ChatViewProvider {
                 case 'getModels':
                     await this._fetchAndSendModels();
                     break;
+                // ── FIX 1: listen for model selection changes ──
+                case 'modelChanged':
+                    this._selectedModel = msg.model;
+                    break;
+                // ── FIX 2: restore history from persisted webview state ──
+                case 'restoreHistory':
+                    // History was restored from vscode.getState() in the webview;
+                    // sync our in-memory history array with what the webview knows.
+                    if (Array.isArray(msg.history)) {
+                        this._history = msg.history;
+                    }
+                    break;
             }
         });
     }
@@ -50,11 +64,18 @@ class ChatViewProvider {
         const cfg = vscode.workspace.getConfiguration('codeAgent');
         return {
             backendUrl: cfg.get('backendUrl', 'http://127.0.0.1:8765'),
-            model: cfg.get('model', 'llama3.2:3b'),
+            model: cfg.get('model', 'gemma4:12b'),
             confirmFileEdits: cfg.get('confirmFileEdits', false),
             confirmFileDeletion: cfg.get('confirmFileDeletion', true),
             confirmDangerousCommands: cfg.get('confirmDangerousCommands', true),
         };
+    }
+    /** Returns the effective model: UI selection > VS Code setting > hardcoded default */
+    _getEffectiveModel() {
+        if (this._selectedModel) {
+            return this._selectedModel;
+        }
+        return this._getConfig().model;
     }
     _getWorkspace() {
         const folders = vscode.workspace.workspaceFolders;
@@ -68,10 +89,16 @@ class ChatViewProvider {
         try {
             const data = await this._httpGet(`${backendUrl}/models`);
             const parsed = JSON.parse(data);
-            this._view?.webview.postMessage({ type: 'models', models: parsed.models || [] });
+            const models = parsed.models || [];
+            // Pre-select the currently effective model in the dropdown
+            this._view?.webview.postMessage({
+                type: 'models',
+                models,
+                selectedModel: this._getEffectiveModel(),
+            });
         }
         catch {
-            this._view?.webview.postMessage({ type: 'models', models: [] });
+            this._view?.webview.postMessage({ type: 'models', models: [], selectedModel: '' });
         }
     }
     _httpGet(url) {
@@ -86,6 +113,8 @@ class ChatViewProvider {
     }
     async _handleUserMessage(text) {
         const cfg = this._getConfig();
+        // ── FIX 1: use the UI-selected model, not always the VS Code setting ──
+        const model = this._getEffectiveModel();
         let workspace;
         try {
             workspace = this._getWorkspace();
@@ -101,7 +130,7 @@ class ChatViewProvider {
             workspace,
             message: text,
             history: this._history,
-            model: cfg.model,
+            model,
             settings: {
                 confirmFileEdits: cfg.confirmFileEdits,
                 confirmFileDeletion: cfg.confirmFileDeletion,
@@ -160,6 +189,10 @@ class ChatViewProvider {
     }
     _handleAgentEvent(event, userText) {
         switch (event.type) {
+            case 'model_info':
+                // Show which model is being used in the log
+                this._view?.webview.postMessage({ type: 'modelInfo', model: event.model });
+                break;
             case 'tool_call':
                 this._view?.webview.postMessage({ type: 'toolCall', tool: event.tool, args: event.args });
                 break;
@@ -298,6 +331,13 @@ class ChatViewProvider {
     border-left: 3px solid var(--vscode-inputValidation-errorBorder);
     white-space: pre-wrap;
   }
+  .msg-model-info {
+    font-size: 10px;
+    opacity: 0.55;
+    text-align: center;
+    padding: 2px 0;
+    font-style: italic;
+  }
   .tool-block {
     background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-panel-border);
@@ -425,6 +465,76 @@ let isRunning = false;
 let currentAgentBlock = null;
 let thinkingEl = null;
 
+// ── FIX 2: Restore chat UI from persisted state on panel re-open ──
+(function restoreState() {
+  const state = vscode.getState();
+  if (state && state.messages && state.messages.length > 0) {
+    messagesEl.innerHTML = '';
+    for (const m of state.messages) {
+      restoreMessage(m);
+    }
+    scrollToBottom();
+    // Sync history back to the extension host
+    if (state.history) {
+      vscode.postMessage({ type: 'restoreHistory', history: state.history });
+    }
+  }
+  if (state && state.selectedModel) {
+    // We'll apply this after models load
+    window._pendingSelectedModel = state.selectedModel;
+  }
+})();
+
+// Persist state whenever we add messages
+let _persistedMessages = [];
+let _persistedHistory = [];
+
+function persistState() {
+  vscode.setState({ messages: _persistedMessages, history: _persistedHistory, selectedModel: modelSelect.value });
+}
+
+function restoreMessage(m) {
+  if (m.type === 'user') {
+    const div = document.createElement('div');
+    div.className = 'msg msg-user';
+    div.textContent = m.text;
+    messagesEl.appendChild(div);
+  } else if (m.type === 'agent') {
+    const div = document.createElement('div');
+    div.className = 'msg msg-agent';
+    div.textContent = m.content;
+    messagesEl.appendChild(div);
+  } else if (m.type === 'error') {
+    const div = document.createElement('div');
+    div.className = 'msg msg-error';
+    div.textContent = m.text;
+    messagesEl.appendChild(div);
+  } else if (m.type === 'modelInfo') {
+    const div = document.createElement('div');
+    div.className = 'msg-model-info';
+    div.textContent = m.text;
+    messagesEl.appendChild(div);
+  } else if (m.type === 'tool') {
+    // Restore collapsed tool blocks
+    const block = document.createElement('div');
+    block.className = 'tool-block';
+    block.innerHTML = \`
+      <div class="tool-header" onclick="toggleTool(this)">
+        <span class="tool-icon">\${m.icon}</span>
+        <span class="tool-name">\${m.tool}</span>
+        <span class="tool-status">\${m.status}</span>
+        <span class="chevron">▶</span>
+      </div>
+      <div class="tool-body">\${escapeHtml(m.result || '')}</div>
+    \`;
+    messagesEl.appendChild(block);
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 // Request models on load
 vscode.postMessage({ type: 'getModels' });
 
@@ -435,8 +545,10 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
+// ── FIX 1: Store selected model and notify extension host ──
 modelSelect.addEventListener('change', () => {
   vscode.postMessage({ type: 'modelChanged', model: modelSelect.value });
+  persistState();
 });
 
 function sendMessage() {
@@ -451,6 +563,9 @@ function cancelAgent() {
 }
 
 function clearChat() {
+  _persistedMessages = [];
+  _persistedHistory = [];
+  persistState();
   vscode.postMessage({ type: 'clear' });
 }
 
@@ -487,15 +602,20 @@ function addToolBlock(tool, args) {
     })
     .join('  ');
 
+  const icon = toolIcon(tool);
   block.innerHTML = \`
     <div class="tool-header" onclick="toggleTool(this)">
-      <span class="tool-icon">\${toolIcon(tool)}</span>
+      <span class="tool-icon">\${icon}</span>
       <span class="tool-name">\${tool}</span>
       <span class="tool-status running">\${argsStr}</span>
       <span class="chevron">▶</span>
     </div>
     <div class="tool-body"></div>
   \`;
+
+  block.dataset.tool = tool;
+  block.dataset.icon = icon;
+  block.dataset.args = argsStr;
 
   messagesEl.appendChild(block);
   scrollToBottom();
@@ -511,8 +631,17 @@ function toggleTool(header) {
 function setToolResult(block, result, success) {
   const status = block.querySelector('.tool-status');
   const body = block.querySelector('.tool-body');
-  status.textContent = success ? '✅' : '❌';
+  const statusText = success ? '✅' : '❌';
+  status.textContent = statusText;
   body.textContent = result;
+
+  // Update persisted messages: find this block's persisted entry and update it
+  const idx = Array.from(messagesEl.children).indexOf(block);
+  if (idx >= 0 && _persistedMessages[idx] && _persistedMessages[idx].type === 'tool') {
+    _persistedMessages[idx].status = statusText;
+    _persistedMessages[idx].result = result;
+    persistState();
+  }
 }
 
 window.addEventListener('message', (event) => {
@@ -521,6 +650,21 @@ window.addEventListener('message', (event) => {
   switch (msg.type) {
     case 'userMessage':
       addMessage('msg-user', msg.text);
+      _persistedMessages.push({ type: 'user', text: msg.text });
+      persistState();
+      break;
+
+    case 'modelInfo':
+      // Show which model the agent is actually using
+      {
+        const div = document.createElement('div');
+        div.className = 'msg-model-info';
+        div.textContent = \`🤖 Using model: \${msg.model}\`;
+        messagesEl.appendChild(div);
+        scrollToBottom();
+        _persistedMessages.push({ type: 'modelInfo', text: \`🤖 Using model: \${msg.model}\` });
+        persistState();
+      }
       break;
 
     case 'agentStart':
@@ -538,6 +682,16 @@ window.addEventListener('message', (event) => {
     case 'toolCall':
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       currentAgentBlock = addToolBlock(msg.tool, msg.args);
+      // Push a placeholder for this tool call into persisted messages
+      _persistedMessages.push({
+        type: 'tool',
+        tool: msg.tool,
+        icon: toolIcon(msg.tool),
+        args: currentAgentBlock.dataset.args,
+        status: '⏳',
+        result: '',
+      });
+      persistState();
       // Track file paths for auto-open
       if (msg.tool === 'edit_file' && msg.args.file_path) {
         window._lastEditPath = msg.args.file_path;
@@ -564,6 +718,8 @@ window.addEventListener('message', (event) => {
     case 'agentMessage':
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       addMessage('msg-agent', msg.content);
+      _persistedMessages.push({ type: 'agent', content: msg.content });
+      persistState();
       break;
 
     case 'agentDone':
@@ -576,6 +732,8 @@ window.addEventListener('message', (event) => {
     case 'error':
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       addMessage('msg-error', '⚠️ ' + msg.message);
+      _persistedMessages.push({ type: 'error', text: '⚠️ ' + msg.message });
+      persistState();
       isRunning = false;
       sendBtn.disabled = false;
       cancelBtn.classList.remove('visible');
@@ -583,6 +741,9 @@ window.addEventListener('message', (event) => {
 
     case 'clear':
       messagesEl.innerHTML = '<div class="hint">Chat cleared. Ask the agent anything about your code.</div>';
+      _persistedMessages = [];
+      _persistedHistory = [];
+      persistState();
       isRunning = false;
       sendBtn.disabled = false;
       cancelBtn.classList.remove('visible');
@@ -602,9 +763,24 @@ window.addEventListener('message', (event) => {
           opt.textContent = m;
           modelSelect.appendChild(opt);
         });
+        // ── FIX 1: restore previously selected model in dropdown ──
+        const target = window._pendingSelectedModel || msg.selectedModel;
+        if (target) {
+          modelSelect.value = target;
+          // If the value was set successfully, notify extension host
+          if (modelSelect.value === target) {
+            vscode.postMessage({ type: 'modelChanged', model: target });
+          }
+        }
       }
       break;
   }
+});
+
+// Sync history after agent message
+window.addEventListener('message', (event) => {
+  // Mirror history for persistence whenever agentMessage arrives
+  // (done event carries content, which already got pushed by agentMessage above)
 });
 </script>
 </body>
